@@ -1,44 +1,90 @@
 import * as Location from 'expo-location';
-import { useEffect, useRef, useState } from 'react';
-import { StyleSheet, View } from 'react-native';
+import * as TaskManager from 'expo-task-manager';
+import { useEffect, useState } from 'react';
+import { StyleSheet, View, Alert } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 import { io, Socket } from 'socket.io-client';
 
-export default function App() {
-    const [location, setLocation] = useState<Location.LocationObjectCoords | null>(null);
-    const socket = useRef<Socket | null>(null);
+const LOCATION_TASK_NAME = 'background-location-task';
+const SOCKET_URL = "https://location-tracker-uz7h.onrender.com";
 
-    useEffect(() => {
+let socket: Socket | null = null;
 
-        socket.current = io("http://192.168.194.136:3000", {
+const getSocket = () => {
+    if (!socket) {
+        socket = io(SOCKET_URL, {
             transports: ["websocket"],
         });
-        let subscription: Location.LocationSubscription;
+    }
+    return socket;
+};
 
-        async function trackPos() {
-            let { status } = await Location.requestForegroundPermissionsAsync();
+TaskManager.defineTask(LOCATION_TASK_NAME, async ({ data, error }: any) => {
+    if (error) {
+        console.error("Background task error:", error);
+        return;
+    }
+    if (data) {
+        const { locations } = data;
+        const location = locations[0];
+        if (location) {
+            getSocket().emit('my-location', location.coords);
+        }
+    }
+});
 
-            if (status !== 'granted') {
-                console.log("permission denied");
+export default function App() {
+    const [location, setLocation] = useState<Location.LocationObjectCoords | null>(null);
+    const [otherLocation, setOtherLocation] = useState<{ latitude: number, longitude: number } | null>(null);
+
+    useEffect(() => {
+        const s = getSocket();
+
+        s.on('location-update', (data) => {
+            setOtherLocation(data);
+        });
+
+        async function startTracking() {
+
+            // foreground permission
+            const { status: foregroundStatus } = await Location.requestForegroundPermissionsAsync();
+            if (foregroundStatus !== 'granted') {
+                Alert.alert("Permission denied", "Foreground location permission is required.");
                 return;
             }
-            subscription = await Location.watchPositionAsync({
+            // background permission
+            const { status: backgroundStatus } = await Location.requestBackgroundPermissionsAsync();
+            if (backgroundStatus !== 'granted') {
+                Alert.alert("Permission denied", "Background location permission is required for tracking while the app is closed.");
+                return;
+            }
+
+            // background task
+            await Location.startLocationUpdatesAsync(LOCATION_TASK_NAME, {
                 accuracy: Location.Accuracy.High,
                 timeInterval: 2000,
-                distanceInterval: 1
-            },
+                distanceInterval: 1,
+            });
+
+            // foreground task
+            await Location.watchPositionAsync(
+                {
+                    accuracy: Location.Accuracy.High,
+                    timeInterval: 2000,
+                    distanceInterval: 1,
+                },
                 (loc) => {
                     setLocation(loc.coords);
-                    socket.current?.emit('my-location', loc.coords);
-                });
+                }
+            );
         }
 
-        trackPos();
+        startTracking();
 
         return () => {
-            socket.current?.disconnect();
-            subscription?.remove();
-        }
+            s.disconnect();
+            socket = null;
+        };
     }, []);
 
     return (
@@ -52,12 +98,20 @@ export default function App() {
                     longitudeDelta: 0.0421,
                 }}
             >
-                <Marker
+                {location && <Marker
                     coordinate={{
-                        latitude: location?.latitude || 37.78825,
-                        longitude: location?.longitude || -122.4324
+                        latitude: location?.latitude,
+                        longitude: location?.longitude
                     }}
-                />
+                />}
+
+                {otherLocation && <Marker
+                    coordinate={{
+                        latitude: otherLocation.latitude,
+                        longitude: otherLocation.longitude
+                    }}
+                    pinColor='blue'
+                />}
             </MapView>
         </View>
     );
