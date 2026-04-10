@@ -15,7 +15,7 @@ export let initSocket = (server: HttpServer) => {
         socket.on('my-location', (data) => {
             console.log(data);
 
-            io.emit("user-location", data);
+            socket.broadcast.emit("location-update", data);
         });
         socket.on('disconnect', () => {
             console.log("User disconnected:", socket.id);
